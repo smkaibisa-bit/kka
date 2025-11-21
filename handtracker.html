@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hand Tracker - Deteksi Jumlah Jari</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; display:flex; flex-direction:column; align-items:center; gap:12px; padding:18px; background:#f7fafc; }
+    h1 { margin:0; font-size:20px }
+    #container { position:relative; width:720px; max-width:95%; }
+    video, canvas { width:100%; height:auto; border-radius:12px; box-shadow:0 6px 18px rgba(0,0,0,0.08); }
+    #info { display:flex; gap:12px; align-items:center; }
+    .badge { background:#fff; padding:10px 14px; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.06); }
+    #count { font-weight:700; font-size:28px }
+    #status { font-size:13px; color:#444 }
+    .controls { display:flex; gap:8px; margin-top:8px }
+    button { padding:8px 12px; border-radius:10px; border:1px solid #ddd; background:white; cursor:pointer }
+    small { color:#666 }
+  </style>
+</head>
+<body>
+  <h1>Aplikasi Web Hand Tracker — Deteksi Jumlah Jari</h1>
+  <div id="container">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <div id="info">
+    <div class="badge"><div>Jari terdeteksi:</div><div id="count">0</div></div>
+    <div class="badge"><div id="status">Menunggu kamera...</div></div>
+  </div>
+
+  <div class="controls">
+    <button id="startBtn">Mulai Kamera</button>
+    <button id="stopBtn">Hentikan Kamera</button>
+    <small>Tip: Hadapkan tangan ke kamera, buka tangan untuk menghitung jari.</small>
+  </div>
+
+  <!-- MediaPipe CDN scripts -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+  <script>
+    const videoElement = document.getElementById('video');
+    const canvasElement = document.getElementById('overlay');
+    const canvasCtx = canvasElement.getContext('2d');
+    const countEl = document.getElementById('count');
+    const statusEl = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+
+    let camera = null;
+
+    // Buat instance MediaPipe Hands
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.6
+    });
+
+    hands.onResults(onResults);
+
+    function resizeCanvasToVideo() {
+      canvasElement.width = videoElement.videoWidth;
+      canvasElement.height = videoElement.videoHeight;
+    }
+
+    function onResults(results) {
+      if (!videoElement.videoWidth) return;
+      resizeCanvasToVideo();
+
+      // Bersihkan canvas
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      // Gambar hasil video sebagai latar belakang (opsional)
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      let totalFingers = 0;
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+          const landmarks = results.multiHandLandmarks[i];
+
+          // Gambar koneksi dan titik landmark menggunakan drawing_utils
+          drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {lineWidth:2});
+          drawLandmarks(canvasCtx, landmarks, {lineWidth:1});
+
+          // Dapatkan label tangan (Left/Right) bila tersedia
+          let handedness = 'Unknown';
+          if (results.multiHandedness && results.multiHandedness[i]) {
+            handedness = results.multiHandedness[i].label; // 'Left' atau 'Right'
+          }
+
+          // Hitung jari terbuka
+          const fingers = countFingersFromLandmarks(landmarks, handedness);
+          totalFingers += fingers;
+
+          // Tampilkan teks jumlah jari di dekat pergelangan
+          const wrist = landmarks[0];
+          const x = wrist.x * canvasElement.width;
+          const y = wrist.y * canvasElement.height;
+          canvasCtx.font = '16px Arial';
+          canvasCtx.fillStyle = 'white';
+          canvasCtx.strokeStyle = 'black';
+          canvasCtx.lineWidth = 3;
+          const text = `${handedness}: ${fingers}`;
+          canvasCtx.strokeText(text, x + 6, y + 6);
+          canvasCtx.fillText(text, x + 6, y + 6);
+        }
+
+        statusEl.textContent = `Terdeteksi ${results.multiHandLandmarks.length} tangan`;
+      } else {
+        statusEl.textContent = 'Tidak ada tangan terdeteksi';
+      }
+
+      countEl.textContent = totalFingers;
+
+      canvasCtx.restore();
+    }
+
+    // Fungsi sederhana untuk menghitung jari terbuka berdasarkan landmark
+    // Heuristik:
+    // - Untuk jari (index, middle, ring, pinky): cek apakah tip.y < pip.y (karena koordinat y meningkat ke bawah)
+    // - Untuk ibu jari: gunakan perbandingan sumbu-x relatif terhadap label tangan
+    function countFingersFromLandmarks(landmarks, handedness) {
+      // indeks landmark (MediaPipe): 0:wrist, 1:thumb_cmc,2:thumb_mcp,3:thumb_ip,4:thumb_tip,
+      // 5:index_mcp,6:index_pip,7:index_dip,8:index_tip, ... dst
+      const tips = [4, 8, 12, 16, 20];
+      let count = 0;
+
+      // Non-thumb fingers (index..pinky)
+      for (let i = 1; i <= 4; i++) {
+        const tip = landmarks[tips[i]];
+        const pip = landmarks[tips[i] - 2]; // pip berada 2 indeks sebelum tip (8->6,12->10,...)
+        if (tip && pip && tip.y < pip.y) {
+          count += 1;
+        }
+      }
+
+      // Thumb heuristic: bandingkan tip.x dengan ip.x sesuai handedness
+      const thumbTip = landmarks[4];
+      const thumbIp = landmarks[3];
+      if (thumbTip && thumbIp) {
+        if (handedness === 'Right') {
+          // Untuk tangan kanan, ibu jari terbuka bila tip.x < ip.x (bergerak ke kiri dari pandangan kamera)
+          if (thumbTip.x < thumbIp.x - 0.02) count += 1;
+        } else if (handedness === 'Left') {
+          // Untuk tangan kiri, ibu jari terbuka bila tip.x > ip.x
+          if (thumbTip.x > thumbIp.x + 0.02) count += 1;
+        } else {
+          // Jika unknown, gunakan jarak absolut sumbu-x sebagai fallback
+          if (Math.abs(thumbTip.x - thumbIp.x) > 0.04) count += 1;
+        }
+      }
+
+      return count;
+    }
+
+    // Start camera
+    async function startCamera() {
+      if (camera) return;
+
+      statusEl.textContent = 'Memulai kamera...';
+
+      camera = new Camera(videoElement, {
+        onFrame: async () => {
+          await hands.send({image: videoElement});
+        },
+        width: 1280,
+        height: 720
+      });
+
+      await camera.start();
+      statusEl.textContent = 'Kamera aktif. Tunjukkan tangan Anda ke kamera.';
+    }
+
+    function stopCamera() {
+      if (camera) {
+        camera.stop();
+        camera = null;
+        statusEl.textContent = 'Kamera dihentikan';
+        countEl.textContent = '0';
+        canvasCtx.clearRect(0,0,canvasElement.width, canvasElement.height);
+      }
+    }
+
+    startBtn.addEventListener('click', startCamera);
+    stopBtn.addEventListener('click', stopCamera);
+
+    // Mulai otomatis bila pengguna mengizinkan (opsional)
+    //startCamera();
+  </script>
+</body>
+</html>
