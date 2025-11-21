@@ -164,22 +164,28 @@
     }
 
     // Start camera
-    async function startCamera() {
-      if (camera) return;
+  async function startCamera() {
+  try {
+    statusEl.textContent = "Memulai kamera...";
 
-      statusEl.textContent = 'Memulai kamera...';
+    camera = new Camera(videoElement, {
+      onFrame: async () => {
+        await hands.send({ image: videoElement });
+      },
+      width: 1280,
+      height: 720
+    });
 
-      camera = new Camera(videoElement, {
-        onFrame: async () => {
-          await hands.send({image: videoElement});
-        },
-        width: 1280,
-        height: 720
-      });
+    await camera.start();
+    statusEl.textContent = "Kamera aktif. Tunjukkan tangan ke kamera.";
 
-      await camera.start();
-      statusEl.textContent = 'Kamera aktif. Tunjukkan tangan Anda ke kamera.';
-    }
+  } catch (err) {
+    console.error("Camera error:", err);
+    statusEl.textContent = "Gagal membuka kamera: " + err.message;
+    alert("Tidak bisa membuka kamera. Pastikan izin kamera aktif dan gunakan HTTPS.");
+  }
+}
+
 
     function stopCamera() {
       if (camera) {
@@ -199,3 +205,4 @@
   </script>
 </body>
 </html>
+
